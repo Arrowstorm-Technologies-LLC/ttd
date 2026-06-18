@@ -25,6 +25,12 @@ Make sure `~/.local/bin` is in your PATH:
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc  # or ~/.zshrc
 ```
 
+Or install via [rack](https://github.com/Arrowstorm-Technologies-LLC/rack):
+
+```sh
+rack ttd Arrowstorm-Technologies-LLC/ttd
+```
+
 ## Usage
 
 ```
