@@ -3,20 +3,191 @@
 
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
+
+aliases_file() {
+  local dir="${XDG_CONFIG_HOME:-$HOME/.config}/ttd"
+  printf '%s/aliases' "$dir"
+}
+
+ensure_aliases_file() {
+  local file
+  file=$(aliases_file)
+  mkdir -p "$(dirname "$file")"
+  [[ -f "$file" ]] || : >"$file"
+}
 
 usage() {
   cat <<'EOF'
 ttd — Time-To-Date
 
 Usage:
-  ttd MM-DD-YYYY    Days until the given date
-  ttd -h            Show help
-  ttd -v            Show version
+  ttd MM-DD-YYYY         Days until the given date
+  ttd <alias>            Days until a saved date alias
+  ttd -a <alias> <date>  Save a date alias (MM-DD-YYYY)
+  ttd -h                 Show help
+  ttd -v                 Show version
 
-Example:
-  ttd 07-22-2026    # days until July 22, 2026
+Examples:
+  ttd 07-22-2026              # days until July 22, 2026
+  ttd -a fold8 07-22-2026     # save July 22, 2026 as "fold8"
+  ttd fold8                   # days until the saved date
 EOF
+}
+
+ordinal_suffix() {
+  local day=$1
+  if (( day % 100 >= 11 && day % 100 <= 13 )); then
+    printf 'th'
+    return
+  fi
+  case $(( day % 10 )) in
+    1) printf 'st' ;;
+    2) printf 'nd' ;;
+    3) printf 'rd' ;;
+    *) printf 'th' ;;
+  esac
+}
+
+parse_date_input() {
+  local input=$1
+  local month day year iso
+
+  if ! [[ "$input" =~ ^([0-9]{2})-([0-9]{2})-([0-9]{4})$ ]]; then
+    echo "ttd: expected date as MM-DD-YYYY, got: $input" >&2
+    return 1
+  fi
+
+  month=${BASH_REMATCH[1]}
+  day=${BASH_REMATCH[2]}
+  year=${BASH_REMATCH[3]}
+  iso="${year}-${month}-${day}"
+
+  if ! date -d "$iso" +%s &>/dev/null; then
+    echo "ttd: invalid date: $input" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$iso"
+}
+
+friendly_label() {
+  local iso=$1
+  if date -d "$iso" +"%B %-d" &>/dev/null; then
+    date -d "$iso" +"%B %-d"
+  else
+    date -d "$iso" +"%B %d" | sed 's/ 0/ /'
+  fi
+}
+
+friendly_label_long() {
+  local iso=$1
+  local month day_num suffix year
+  month=$(date -d "$iso" +"%B")
+  day_num=$(date -d "$iso" +%-d 2>/dev/null || date -d "$iso" +%d | sed 's/^0//')
+  suffix=$(ordinal_suffix "$day_num")
+  year=$(date -d "$iso" +"%Y")
+  printf '%s %s%s, %s' "$month" "$day_num" "$suffix" "$year"
+}
+
+valid_alias_name() {
+  local name=$1
+  [[ "$name" =~ ^[a-zA-Z][a-zA-Z0-9_-]*$ ]]
+}
+
+lookup_alias() {
+  local name=$1
+  local file line key value
+  file=$(aliases_file)
+  [[ -f "$file" ]] || return 1
+
+  while IFS='=' read -r key value; do
+    [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+    if [[ "$key" == "$name" ]]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+  done <"$file"
+  return 1
+}
+
+save_alias() {
+  local name=$1
+  local date_input=$2
+  local iso file tmp label
+
+  if ! valid_alias_name "$name"; then
+    echo "ttd: invalid alias name: $name (use letters, numbers, _ or -; must start with a letter)" >&2
+    return 1
+  fi
+
+  if ! iso=$(parse_date_input "$date_input"); then
+    return 1
+  fi
+
+  ensure_aliases_file
+  file=$(aliases_file)
+  tmp=$(mktemp)
+
+  if [[ -f "$file" ]]; then
+    while IFS='=' read -r key value; do
+      [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+      [[ "$key" == "$name" ]] && continue
+      printf '%s=%s\n' "$key" "$value" >>"$tmp"
+    done <"$file"
+  fi
+
+  printf '%s=%s\n' "$name" "$date_input" >>"$tmp"
+  mv "$tmp" "$file"
+
+  label=$(friendly_label_long "$iso")
+  printf '%s saved as %s\n' "$label" "$name"
+}
+
+resolve_to_iso() {
+  local input=$1
+  local date_input iso
+
+  if iso=$(parse_date_input "$input" 2>/dev/null); then
+    printf '%s\n' "$iso"
+    return 0
+  fi
+
+  if date_input=$(lookup_alias "$input"); then
+    if ! iso=$(parse_date_input "$date_input"); then
+      echo "ttd: alias '$input' has invalid date: $date_input" >&2
+      return 1
+    fi
+    printf '%s\n' "$iso"
+    return 0
+  fi
+
+  echo "ttd: unknown date or alias: $input" >&2
+  return 1
+}
+
+report_days_until() {
+  local iso=$1
+  local now_epoch target_epoch days label unit
+
+  now_epoch=$(date +%s)
+  target_epoch=$(date -d "$iso" +%s)
+  days=$(( (target_epoch - now_epoch) / 86400 ))
+  label=$(friendly_label "$iso")
+
+  if (( days == 1 || days == -1 )); then
+    unit=day
+  else
+    unit=days
+  fi
+
+  if (( days < 0 )); then
+    printf '%s %s ago (%s)\n' "$(( -days ))" "$unit" "$label"
+  elif (( days == 0 )); then
+    printf 'Today is %s\n' "$label"
+  else
+    printf '%s %s until %s\n' "$days" "$unit" "$label"
+  fi
 }
 
 if [[ $# -eq 0 ]] || [[ "${1:-}" == "-h" ]] || [[ "${1:-}" == "--help" ]]; then
@@ -29,41 +200,20 @@ if [[ "${1:-}" == "-v" ]] || [[ "${1:-}" == "--version" ]]; then
   exit 0
 fi
 
-input=$1
-if ! [[ "$input" =~ ^([0-9]{2})-([0-9]{2})-([0-9]{4})$ ]]; then
-  echo "ttd: expected date as MM-DD-YYYY, got: $input" >&2
+if [[ "${1:-}" == "-a" ]]; then
+  if [[ $# -ne 3 ]]; then
+    echo "ttd: -a requires an alias name and date (MM-DD-YYYY)" >&2
+    exit 1
+  fi
+  save_alias "$2" "$3"
+  exit 0
+fi
+
+if [[ $# -ne 1 ]]; then
+  echo "ttd: unexpected arguments" >&2
+  usage >&2
   exit 1
 fi
 
-month=${BASH_REMATCH[1]}
-day=${BASH_REMATCH[2]}
-year=${BASH_REMATCH[3]}
-iso="${year}-${month}-${day}"
-
-if ! target_epoch=$(date -d "$iso" +%s 2>/dev/null); then
-  echo "ttd: invalid date: $input" >&2
-  exit 1
-fi
-
-now_epoch=$(date +%s)
-days=$(( (target_epoch - now_epoch) / 86400 ))
-
-if date -d "$iso" +"%B %-d" &>/dev/null; then
-  label=$(date -d "$iso" +"%B %-d")
-else
-  label=$(date -d "$iso" +"%B %d" | sed 's/ 0/ /')
-fi
-
-if (( days == 1 || days == -1 )); then
-  unit=day
-else
-  unit=days
-fi
-
-if (( days < 0 )); then
-  echo "$(( -days )) $unit ago ($label)"
-elif (( days == 0 )); then
-  echo "Today is $label"
-else
-  echo "$days $unit until $label"
-fi
+iso=$(resolve_to_iso "$1")
+report_days_until "$iso"
