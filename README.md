@@ -83,4 +83,4 @@ Aliases are stored in `~/.config/ttd/aliases` as `alias=MM-DD-YYYY`.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
