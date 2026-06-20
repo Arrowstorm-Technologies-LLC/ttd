@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 
 aliases_file() {
   local dir="${XDG_CONFIG_HOME:-$HOME/.config}/ttd"
@@ -22,16 +22,20 @@ usage() {
 ttd — Time-To-Date
 
 Usage:
-  ttd MM-DD-YYYY         Days until the given date
-  ttd <alias>            Days until a saved date alias
-  ttd -a <alias> <date>  Save a date alias (MM-DD-YYYY)
-  ttd -h                 Show help
-  ttd -v                 Show version
+  ttd MM-DD-YYYY            Days until the given date
+  ttd <alias>               Days until a saved date alias
+  ttd -a <alias> <date>     Save a date alias (MM-DD-YYYY)
+  ttd -l                    List all saved aliases
+  ttd -d <alias>            Delete a saved alias
+  ttd -h                    Show help
+  ttd -v                    Show version
 
 Examples:
   ttd 07-22-2026              # days until July 22, 2026
   ttd -a fold8 07-22-2026     # save July 22, 2026 as "fold8"
   ttd fold8                   # days until the saved date
+  ttd -l                      # list all aliases
+  ttd -d fold8                # delete the "fold8" alias
 EOF
 }
 
@@ -73,18 +77,19 @@ parse_date_input() {
 
 friendly_label() {
   local iso=$1
-  if date -d "$iso" +"%B %-d" &>/dev/null; then
-    date -d "$iso" +"%B %-d"
-  else
-    date -d "$iso" +"%B %d" | sed 's/ 0/ /'
-  fi
+  date -d "$iso" +"%B %-d"
+}
+
+friendly_label_epoch() {
+  local epoch=$1
+  date -d "@$epoch" +"%B %-d"
 }
 
 friendly_label_long() {
   local iso=$1
   local month day_num suffix year
   month=$(date -d "$iso" +"%B")
-  day_num=$(date -d "$iso" +%-d 2>/dev/null || date -d "$iso" +%d | sed 's/^0//')
+  day_num=$(date -d "$iso" +%-d)
   suffix=$(ordinal_suffix "$day_num")
   year=$(date -d "$iso" +"%Y")
   printf '%s %s%s, %s' "$month" "$day_num" "$suffix" "$year"
@@ -144,6 +149,44 @@ save_alias() {
   printf '%s saved as %s\n' "$label" "$name"
 }
 
+list_aliases() {
+  local file
+  file=$(aliases_file)
+  if [[ ! -f "$file" ]] || [[ ! -s "$file" ]]; then
+    echo "ttd: no aliases saved"
+    return 0
+  fi
+  while IFS='=' read -r key value; do
+    [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+    printf '%-20s  %s\n' "$key" "$value"
+  done <"$file"
+}
+
+delete_alias() {
+  local name=$1 file tmp found=0
+  file=$(aliases_file)
+  if [[ ! -f "$file" ]]; then
+    echo "ttd: no aliases file found" >&2
+    return 1
+  fi
+  tmp=$(mktemp)
+  while IFS='=' read -r key value; do
+    [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+    if [[ "$key" == "$name" ]]; then
+      found=1
+      continue
+    fi
+    printf '%s=%s\n' "$key" "$value" >>"$tmp"
+  done <"$file"
+  if (( found == 0 )); then
+    rm -f "$tmp"
+    echo "ttd: alias not found: $name" >&2
+    return 1
+  fi
+  mv "$tmp" "$file"
+  printf 'Deleted alias: %s\n' "$name"
+}
+
 resolve_to_iso() {
   local input=$1
   local date_input iso
@@ -173,7 +216,7 @@ report_days_until() {
   now_epoch=$(date +%s)
   target_epoch=$(date -d "$iso" +%s)
   days=$(( (target_epoch - now_epoch) / 86400 ))
-  label=$(friendly_label "$iso")
+  label=$(friendly_label_epoch "$target_epoch")
 
   if (( days == 1 || days == -1 )); then
     unit=day
@@ -200,12 +243,26 @@ if [[ "${1:-}" == "-v" ]] || [[ "${1:-}" == "--version" ]]; then
   exit 0
 fi
 
-if [[ "${1:-}" == "-a" ]]; then
+if [[ "${1:-}" == "-a" ]] || [[ "${1:-}" == "--add" ]]; then
   if [[ $# -ne 3 ]]; then
     echo "ttd: -a requires an alias name and date (MM-DD-YYYY)" >&2
     exit 1
   fi
   save_alias "$2" "$3"
+  exit 0
+fi
+
+if [[ "${1:-}" == "-l" ]] || [[ "${1:-}" == "--list" ]]; then
+  list_aliases
+  exit 0
+fi
+
+if [[ "${1:-}" == "-d" ]] || [[ "${1:-}" == "--delete" ]]; then
+  if [[ $# -ne 2 ]]; then
+    echo "ttd: -d requires an alias name" >&2
+    exit 1
+  fi
+  delete_alias "$2"
   exit 0
 fi
 
